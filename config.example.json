@@ -24,7 +24,12 @@
     "from": "noreply@example.com",
     "useTLS": true
   },
+  "gitServer": {
+    "enabled": true,
+    "sshPort": "2222",
+    "httpPort": "8090",
+    "repoRootPath": "./git-repos"
+  },
   "jwtSecret": "your-secret-key-here",
   "dashboardUrl": "http://localhost:3000"
 }
-

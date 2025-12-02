@@ -32,6 +32,7 @@ import (
 	"hasir-api/pkg/auth"
 	"hasir-api/pkg/config"
 	"hasir-api/pkg/email"
+	"hasir-api/pkg/gitserver"
 	_ "hasir-api/pkg/log"
 )
 
@@ -75,7 +76,7 @@ func main() {
 	organizationPgRepository.StartEmailJobProcessor(ctx, emailService, 10, 5*time.Second)
 
 	userService := user.NewService(cfg, userPgRepository)
-	gitRepositoryService := registry.NewService(repositoryPgRepository)
+	gitRepositoryService := registry.NewServiceWithConfig(repositoryPgRepository, cfg.GitServer.RepoRootPath)
 	organizationService := organization.NewService(organizationPgRepository, emailService)
 
 	authInterceptor := auth.NewAuthInterceptor(cfg.JwtSecret)
@@ -116,6 +117,22 @@ func main() {
 		Protocols: protocols,
 	}
 
+	// Initialize Git servers if enabled
+	var gitServer *gitserver.Server
+	if cfg.GitServer.Enabled {
+		userAdapter := gitserver.NewUserAdapter(userPgRepository)
+		repoAdapter := gitserver.NewRepositoryAdapter(repositoryPgRepository)
+		
+		gitServer, err = gitserver.NewServer(cfg, userAdapter, repoAdapter)
+		if err != nil {
+			zap.L().Fatal("Failed to create Git server", zap.Error(err))
+		}
+		
+		if err := gitServer.Start(ctx); err != nil {
+			zap.L().Fatal("Failed to start Git servers", zap.Error(err))
+		}
+	}
+
 	go func() {
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			zap.L().Fatal("HTTP server error", zap.Error(err))
@@ -123,10 +140,10 @@ func main() {
 	}()
 	zap.L().Info("Server started on port", zap.String("port", cfg.Server.Port))
 
-	gracefulShutdown(server, traceProvider, organizationPgRepository)
+	gracefulShutdown(server, traceProvider, organizationPgRepository, gitServer)
 }
 
-func gracefulShutdown(server *http.Server, traceProvider *sdktrace.TracerProvider, organizationRepo *organization.PgRepository) {
+func gracefulShutdown(server *http.Server, traceProvider *sdktrace.TracerProvider, organizationRepo *organization.PgRepository, gitServer *gitserver.Server) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -139,6 +156,13 @@ func gracefulShutdown(server *http.Server, traceProvider *sdktrace.TracerProvide
 	// Stop email job processor
 	if organizationRepo != nil {
 		organizationRepo.StopEmailJobProcessor()
+	}
+
+	// Shutdown Git servers
+	if gitServer != nil {
+		if err := gitServer.Shutdown(shutdownCtx); err != nil {
+			zap.L().Error("Git servers shutdown error", zap.Error(err))
+		}
 	}
 
 	if err := server.Shutdown(shutdownCtx); err != nil {

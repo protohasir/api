@@ -33,6 +33,13 @@ func NewService(repository Repository) Service {
 	}
 }
 
+func NewServiceWithConfig(repository Repository, repoRootPath string) Service {
+	return &service{
+		rootPath:   repoRootPath,
+		repository: repository,
+	}
+}
+
 func (s *service) CreateRepository(
 	ctx context.Context,
 	req *registryv1.CreateRepositoryRequest,
@@ -47,12 +54,20 @@ func (s *service) CreateRepository(
 		return fmt.Errorf("repository %q already exists", repoName)
 	}
 
-	repoPath := filepath.Join(s.rootPath, repoName)
+	// Get owner ID from context (set by auth interceptor)
+	ownerId, ok := ctx.Value("user_id").(string)
+	if !ok || ownerId == "" {
+		return fmt.Errorf("user not authenticated")
+	}
+
+	// Create directory structure: rootPath/ownerId/repoName
+	repoPath := filepath.Join(s.rootPath, ownerId, repoName)
 
 	if err := os.MkdirAll(repoPath, 0o755); err != nil {
 		return fmt.Errorf("failed to create repository directory: %w", err)
 	}
 
+	// Initialize as bare repository (for Git server)
 	_, err = git.PlainInit(repoPath, true)
 	if err != nil {
 		if errors.Is(err, git.ErrRepositoryAlreadyExists) {
@@ -64,12 +79,20 @@ func (s *service) CreateRepository(
 	}
 
 	now := time.Now().UTC()
+	// Default to private repository
+	isPrivate := true
+	// TODO: Add is_public and description fields to protobuf definition
+	// Then use: isPrivate = !req.GetIsPublic()
+
 	repoDTO := &RepositoryDTO{
-		Id:        uuid.NewString(),
-		Name:      repoName,
-		Path:      repoPath,
-		CreatedAt: now,
-		UpdatedAt: &now,
+		Id:          uuid.NewString(),
+		Name:        repoName,
+		OwnerId:     ownerId,
+		Path:        repoPath,
+		IsPrivate:   isPrivate,
+		Description: nil,
+		CreatedAt:   now,
+		UpdatedAt:   &now,
 	}
 
 	if err := s.repository.CreateRepository(ctx, repoDTO); err != nil {

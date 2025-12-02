@@ -65,13 +65,21 @@ type SmtpConfig struct {
 	UseTLS   bool   `koanf:"useTLS"`
 }
 
+type GitServerConfig struct {
+	SSHPort      string `koanf:"sshPort"`
+	HTTPPort     string `koanf:"httpPort"`
+	RepoRootPath string `koanf:"repoRootPath"`
+	Enabled      bool   `koanf:"enabled"`
+}
+
 type Config struct {
-	Server         ServerConfig   `koanf:"server"`
-	Otel           OtelConfig     `koanf:"otel"`
-	PostgresConfig PostgresConfig `koanf:"postgresql"`
-	Smtp           SmtpConfig     `koanf:"smtp"`
-	JwtSecret      []byte         `koanf:"jwtSecret"`
-	DashboardUrl   string         `koanf:"dashboardUrl"`
+	Server         ServerConfig    `koanf:"server"`
+	Otel           OtelConfig      `koanf:"otel"`
+	PostgresConfig PostgresConfig  `koanf:"postgresql"`
+	Smtp           SmtpConfig      `koanf:"smtp"`
+	GitServer      GitServerConfig `koanf:"gitServer"`
+	JwtSecret      []byte          `koanf:"jwtSecret"`
+	DashboardUrl   string          `koanf:"dashboardUrl"`
 }
 
 type ConfigReader interface {

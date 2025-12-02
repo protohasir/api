@@ -23,8 +23,16 @@ import (
 type Repository interface {
 	CreateRepository(ctx context.Context, repo *RepositoryDTO) error
 	GetRepositoryByName(ctx context.Context, name string) (*RepositoryDTO, error)
+	GetRepositoryByPath(ctx context.Context, owner, name string) (*RepositoryDTO, error)
+	GetRepositoryById(ctx context.Context, id string) (*RepositoryDTO, error)
 	GetRepositories(ctx context.Context, page, pageSize int) (*[]RepositoryDTO, error)
 	GetRepositoriesCount(ctx context.Context) (int, error)
+	CheckRepositoryAccess(ctx context.Context, username, owner, repoName, accessType string) (bool, error)
+	// Collaborator management
+	AddCollaborator(ctx context.Context, collaborator *RepositoryCollaboratorDTO) error
+	GetCollaborators(ctx context.Context, repoId string) ([]*RepositoryCollaboratorDTO, error)
+	GetCollaboratorPermission(ctx context.Context, repoId, userId string) (*CollaboratorPermission, error)
+	RemoveCollaborator(ctx context.Context, repoId, userId string) error
 }
 
 var (
@@ -173,6 +181,160 @@ func (r *PgRepository) GetRepositoryByName(ctx context.Context, name string) (*R
 	return &repo, nil
 }
 
+func (r *PgRepository) GetRepositoryByPath(ctx context.Context, owner, name string) (*RepositoryDTO, error) {
+	var span trace.Span
+	ctx, span = r.tracer.Start(ctx, "GetRepositoryByPath", trace.WithAttributes(
+		attribute.KeyValue{
+			Key:   "owner",
+			Value: attribute.StringValue(owner),
+		},
+		attribute.KeyValue{
+			Key:   "name",
+			Value: attribute.StringValue(name),
+		},
+	))
+	defer span.End()
+
+	connection, err := r.connectionPool.Acquire(ctx)
+	if err != nil {
+		return nil, ErrFailedAcquireConnection
+	}
+	defer connection.Release()
+
+	// For now, just match by name. In production, you'd join with users table
+	// and match owner username or organization name
+	sql := "SELECT * FROM repositories WHERE name = $1 AND deleted_at IS NULL"
+
+	var rows pgx.Rows
+	rows, err = connection.Query(ctx, sql, name)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("something went wrong"))
+	}
+	defer rows.Close()
+
+	var repo RepositoryDTO
+	repo, err = pgx.CollectOneRow[RepositoryDTO](rows, pgx.RowToStructByName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRepositoryNotFound
+		}
+
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to collect row"))
+	}
+
+	return &repo, nil
+}
+
+func (r *PgRepository) GetRepositoryById(ctx context.Context, id string) (*RepositoryDTO, error) {
+	var span trace.Span
+	ctx, span = r.tracer.Start(ctx, "GetRepositoryById", trace.WithAttributes(
+		attribute.KeyValue{
+			Key:   "id",
+			Value: attribute.StringValue(id),
+		},
+	))
+	defer span.End()
+
+	connection, err := r.connectionPool.Acquire(ctx)
+	if err != nil {
+		return nil, ErrFailedAcquireConnection
+	}
+	defer connection.Release()
+
+	sql := "SELECT * FROM repositories WHERE id = $1 AND deleted_at IS NULL"
+
+	rows, err := connection.Query(ctx, sql, id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("something went wrong"))
+	}
+	defer rows.Close()
+
+	repo, err := pgx.CollectOneRow[RepositoryDTO](rows, pgx.RowToStructByName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRepositoryNotFound
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to collect row"))
+	}
+
+	return &repo, nil
+}
+
+func (r *PgRepository) CheckRepositoryAccess(ctx context.Context, username, owner, repoName, accessType string) (bool, error) {
+	var span trace.Span
+	ctx, span = r.tracer.Start(ctx, "CheckRepositoryAccess", trace.WithAttributes(
+		attribute.KeyValue{
+			Key:   "username",
+			Value: attribute.StringValue(username),
+		},
+		attribute.KeyValue{
+			Key:   "owner",
+			Value: attribute.StringValue(owner),
+		},
+		attribute.KeyValue{
+			Key:   "repoName",
+			Value: attribute.StringValue(repoName),
+		},
+		attribute.KeyValue{
+			Key:   "accessType",
+			Value: attribute.StringValue(accessType),
+		},
+	))
+	defer span.End()
+
+	connection, err := r.connectionPool.Acquire(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer connection.Release()
+
+	// Get repository
+	repo, err := r.GetRepositoryByPath(ctx, owner, repoName)
+	if err != nil {
+		return false, err
+	}
+
+	// If repository is public and access is read, allow
+	if !repo.IsPrivate && accessType == "read" {
+		return true, nil
+	}
+
+	// Get user ID by username
+	var userId string
+	userSql := "SELECT id FROM users WHERE username = $1 AND deleted_at IS NULL"
+	err = connection.QueryRow(ctx, userSql, username).Scan(&userId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	// Check if user is owner
+	if repo.OwnerId == userId {
+		return true, nil
+	}
+
+	// Check collaborator permissions
+	permission, err := r.GetCollaboratorPermission(ctx, repo.Id, userId)
+	if err != nil {
+		// Not a collaborator
+		return false, nil
+	}
+
+	// Check permission level
+	switch accessType {
+	case "read":
+		return *permission == PermissionRead || *permission == PermissionWrite || *permission == PermissionAdmin, nil
+	case "write":
+		return *permission == PermissionWrite || *permission == PermissionAdmin, nil
+	case "admin":
+		return *permission == PermissionAdmin, nil
+	default:
+		return false, nil
+	}
+}
+
 func (r *PgRepository) GetRepositories(ctx context.Context, page, pageSize int) (*[]RepositoryDTO, error) {
 	var span trace.Span
 	ctx, span = r.tracer.Start(ctx, "GetRepositories", trace.WithAttributes(
@@ -234,4 +396,151 @@ func (r *PgRepository) GetRepositoriesCount(ctx context.Context) (int, error) {
 	}
 
 	return count, nil
+}
+
+func (r *PgRepository) AddCollaborator(ctx context.Context, collaborator *RepositoryCollaboratorDTO) error {
+	var span trace.Span
+	ctx, span = r.tracer.Start(ctx, "AddCollaborator", trace.WithAttributes(
+		attribute.KeyValue{
+			Key:   "repositoryId",
+			Value: attribute.StringValue(collaborator.RepositoryId),
+		},
+		attribute.KeyValue{
+			Key:   "userId",
+			Value: attribute.StringValue(collaborator.UserId),
+		},
+	))
+	defer span.End()
+
+	connection, err := r.connectionPool.Acquire(ctx)
+	if err != nil {
+		return ErrFailedAcquireConnection
+	}
+	defer connection.Release()
+
+	sql := `INSERT INTO repository_collaborators (id, repository_id, user_id, permission, created_at) 
+			VALUES (@Id, @RepositoryId, @UserId, @Permission, @CreatedAt)`
+	sqlArgs := pgx.NamedArgs{
+		"Id":           collaborator.Id,
+		"RepositoryId": collaborator.RepositoryId,
+		"UserId":       collaborator.UserId,
+		"Permission":   collaborator.Permission,
+		"CreatedAt":    time.Now().UTC(),
+	}
+
+	if _, err = connection.Exec(ctx, sql, sqlArgs); err != nil {
+		span.RecordError(err)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			if pgErr.Code == ErrUniqueViolationCode {
+				return connect.NewError(connect.CodeAlreadyExists, errors.New("collaborator already exists"))
+			}
+		}
+		return connect.NewError(connect.CodeInternal, errors.New("failed to add collaborator"))
+	}
+
+	return nil
+}
+
+func (r *PgRepository) GetCollaborators(ctx context.Context, repoId string) ([]*RepositoryCollaboratorDTO, error) {
+	var span trace.Span
+	ctx, span = r.tracer.Start(ctx, "GetCollaborators", trace.WithAttributes(
+		attribute.KeyValue{
+			Key:   "repositoryId",
+			Value: attribute.StringValue(repoId),
+		},
+	))
+	defer span.End()
+
+	connection, err := r.connectionPool.Acquire(ctx)
+	if err != nil {
+		return nil, ErrFailedAcquireConnection
+	}
+	defer connection.Release()
+
+	sql := "SELECT * FROM repository_collaborators WHERE repository_id = $1 ORDER BY created_at DESC"
+
+	rows, err := connection.Query(ctx, sql, repoId)
+	if err != nil {
+		span.RecordError(err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to query collaborators"))
+	}
+	defer rows.Close()
+
+	collaborators, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[RepositoryCollaboratorDTO])
+	if err != nil {
+		span.RecordError(err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to collect collaborators"))
+	}
+
+	return collaborators, nil
+}
+
+func (r *PgRepository) GetCollaboratorPermission(ctx context.Context, repoId, userId string) (*CollaboratorPermission, error) {
+	var span trace.Span
+	ctx, span = r.tracer.Start(ctx, "GetCollaboratorPermission", trace.WithAttributes(
+		attribute.KeyValue{
+			Key:   "repositoryId",
+			Value: attribute.StringValue(repoId),
+		},
+		attribute.KeyValue{
+			Key:   "userId",
+			Value: attribute.StringValue(userId),
+		},
+	))
+	defer span.End()
+
+	connection, err := r.connectionPool.Acquire(ctx)
+	if err != nil {
+		return nil, ErrFailedAcquireConnection
+	}
+	defer connection.Release()
+
+	sql := "SELECT permission FROM repository_collaborators WHERE repository_id = $1 AND user_id = $2"
+
+	var permission CollaboratorPermission
+	err = connection.QueryRow(ctx, sql, repoId, userId).Scan(&permission)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("collaborator not found"))
+		}
+		span.RecordError(err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get permission"))
+	}
+
+	return &permission, nil
+}
+
+func (r *PgRepository) RemoveCollaborator(ctx context.Context, repoId, userId string) error {
+	var span trace.Span
+	ctx, span = r.tracer.Start(ctx, "RemoveCollaborator", trace.WithAttributes(
+		attribute.KeyValue{
+			Key:   "repositoryId",
+			Value: attribute.StringValue(repoId),
+		},
+		attribute.KeyValue{
+			Key:   "userId",
+			Value: attribute.StringValue(userId),
+		},
+	))
+	defer span.End()
+
+	connection, err := r.connectionPool.Acquire(ctx)
+	if err != nil {
+		return ErrFailedAcquireConnection
+	}
+	defer connection.Release()
+
+	sql := "DELETE FROM repository_collaborators WHERE repository_id = $1 AND user_id = $2"
+	result, err := connection.Exec(ctx, sql, repoId, userId)
+	if err != nil {
+		span.RecordError(err)
+		return connect.NewError(connect.CodeInternal, errors.New("failed to remove collaborator"))
+	}
+
+	if result.RowsAffected() == 0 {
+		return connect.NewError(connect.CodeNotFound, errors.New("collaborator not found"))
+	}
+
+	return nil
 }
