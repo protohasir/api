@@ -216,6 +216,20 @@ func (mr *MockServiceMockRecorder) ProcessSdkTrigger(ctx, repositoryId, repoPath
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessSdkTrigger", reflect.TypeOf((*MockService)(nil).ProcessSdkTrigger), ctx, repositoryId, repoPath)
 }
 
+// TriggerDocumentationGeneration mocks base method.
+func (m *MockService) TriggerDocumentationGeneration(ctx context.Context, repositoryId, commitHash string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "TriggerDocumentationGeneration", ctx, repositoryId, commitHash)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// TriggerDocumentationGeneration indicates an expected call of TriggerDocumentationGeneration.
+func (mr *MockServiceMockRecorder) TriggerDocumentationGeneration(ctx, repositoryId, commitHash any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TriggerDocumentationGeneration", reflect.TypeOf((*MockService)(nil).TriggerDocumentationGeneration), ctx, repositoryId, commitHash)
+}
+
 // TriggerSdkGeneration mocks base method.
 func (m *MockService) TriggerSdkGeneration(ctx context.Context, repositoryId, commitHash string) error {
 	m.ctrl.T.Helper()

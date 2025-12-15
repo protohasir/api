@@ -45,6 +45,7 @@ type Service interface {
 	ValidateSshAccess(ctx context.Context, userId, repoPath string, operation SshOperation) (bool, error)
 	HasProtoFiles(ctx context.Context, repoPath string) (bool, error)
 	TriggerSdkGeneration(ctx context.Context, repositoryId, commitHash string) error
+	TriggerDocumentationGeneration(ctx context.Context, repositoryId, commitHash string) error
 }
 
 type service struct {
@@ -824,6 +825,51 @@ func (s *service) TriggerSdkGeneration(ctx context.Context, repositoryId, commit
 		zap.String("repositoryId", repositoryId),
 		zap.String("commitHash", commitHash),
 		zap.Int("jobCount", len(jobs)))
+
+	return nil
+}
+
+func (s *service) TriggerDocumentationGeneration(ctx context.Context, repositoryId, commitHash string) error {
+	repoFullPath := filepath.Join(s.rootPath, repositoryId)
+
+	hasProtoFiles, err := s.HasProtoFiles(ctx, repoFullPath)
+	if err != nil {
+		return fmt.Errorf("failed to check for proto files: %w", err)
+	}
+
+	if !hasProtoFiles {
+		zap.L().Debug("skipping documentation generation: repository contains no proto files",
+			zap.String("repositoryId", repositoryId),
+			zap.String("commitHash", commitHash))
+		return nil
+	}
+
+	repo, err := s.repository.GetRepositoryById(ctx, repositoryId)
+	if err != nil {
+		return fmt.Errorf("failed to fetch repository: %w", err)
+	}
+
+	workDir, err := s.checkoutCommitToTempDir(ctx, repoFullPath, commitHash)
+	if err != nil {
+		return fmt.Errorf("failed to checkout commit: %w", err)
+	}
+	defer func() {
+		if removeErr := os.RemoveAll(workDir); removeErr != nil {
+			zap.L().Warn("failed to cleanup temp directory", zap.String("path", workDir), zap.Error(removeErr))
+		}
+	}()
+
+	if err := s.GenerateDocumentation(ctx, repositoryId, commitHash, workDir, repo.OrganizationId); err != nil {
+		zap.L().Error("documentation generation failed",
+			zap.String("repositoryId", repositoryId),
+			zap.String("commitHash", commitHash),
+			zap.Error(err))
+		return fmt.Errorf("documentation generation failed: %w", err)
+	}
+
+	zap.L().Info("documentation generation triggered successfully",
+		zap.String("repositoryId", repositoryId),
+		zap.String("commitHash", commitHash))
 
 	return nil
 }

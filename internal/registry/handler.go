@@ -276,11 +276,9 @@ func (h *GitSshHandler) HandleSession(session ssh.Session, userId string) error 
 	var execCmd *exec.Cmd
 	switch safeGitCmd {
 	case "git-upload-pack":
-		// absRepoPath is validated above (exists, is a git repo, within reposPath)
 		// #nosec G204 -- command is hardcoded, path is validated and sanitized
 		execCmd = exec.Command("git-upload-pack", absRepoPath)
 	case "git-receive-pack":
-		// absRepoPath is validated above (exists, is a git repo, within reposPath)
 		// #nosec G204 -- command is hardcoded, path is validated and sanitized
 		execCmd = exec.Command("git-receive-pack", absRepoPath)
 	default:
@@ -306,19 +304,19 @@ func (h *GitSshHandler) HandleSession(session ssh.Session, userId string) error 
 	}
 
 	if operation == SshOperationWrite {
-		h.triggerSdkGenerationAfterPush(absRepoPath)
+		h.triggerPostPushActions(absRepoPath)
 	}
 
 	return nil
 }
 
-func (h *GitSshHandler) triggerSdkGenerationAfterPush(repoPath string) {
+func (h *GitSshHandler) triggerPostPushActions(repoPath string) {
 	ctx := context.Background()
 	repoId := filepath.Base(repoPath)
 
 	commitHash, err := h.getLatestCommitHash(repoPath)
 	if err != nil {
-		zap.L().Warn("failed to get latest commit hash for SDK generation",
+		zap.L().Warn("failed to get latest commit hash for post-push actions",
 			zap.String("repoId", repoId),
 			zap.Error(err))
 		return
@@ -333,10 +331,17 @@ func (h *GitSshHandler) triggerSdkGenerationAfterPush(repoPath string) {
 	}
 
 	if !hasProtoFiles {
-		zap.L().Info("skipping SDK generation: repository contains no proto files",
+		zap.L().Info("skipping post-push actions: repository contains no proto files",
 			zap.String("repoId", repoId),
 			zap.String("commitHash", commitHash))
 		return
+	}
+
+	if err := h.service.TriggerDocumentationGeneration(ctx, repoId, commitHash); err != nil {
+		zap.L().Error("failed to trigger documentation generation",
+			zap.String("repoId", repoId),
+			zap.String("commitHash", commitHash),
+			zap.Error(err))
 	}
 
 	if err := h.service.TriggerSdkGeneration(ctx, repoId, commitHash); err != nil {
@@ -516,16 +521,20 @@ func (h *GitHttpHandler) handleReceivePack(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	h.triggerPostPushActions(r.Context(), repoPath)
+}
+
+func (h *GitHttpHandler) triggerPostPushActions(ctx context.Context, repoPath string) {
 	repoId := filepath.Base(repoPath)
 	commitHash, err := h.getLatestCommitHash(repoPath)
 	if err != nil {
-		zap.L().Warn("failed to get latest commit hash for SDK generation",
+		zap.L().Warn("failed to get latest commit hash for post-push actions",
 			zap.String("repoId", repoId),
 			zap.Error(err))
 		return
 	}
 
-	hasProtoFiles, err := h.service.HasProtoFiles(r.Context(), repoPath)
+	hasProtoFiles, err := h.service.HasProtoFiles(ctx, repoPath)
 	if err != nil {
 		zap.L().Warn("failed to check for proto files",
 			zap.String("repoId", repoId),
@@ -534,13 +543,20 @@ func (h *GitHttpHandler) handleReceivePack(w http.ResponseWriter, r *http.Reques
 	}
 
 	if !hasProtoFiles {
-		zap.L().Info("skipping SDK generation: repository contains no proto files",
+		zap.L().Info("skipping post-push actions: repository contains no proto files",
 			zap.String("repoId", repoId),
 			zap.String("commitHash", commitHash))
 		return
 	}
 
-	if err := h.service.TriggerSdkGeneration(r.Context(), repoId, commitHash); err != nil {
+	if err := h.service.TriggerDocumentationGeneration(ctx, repoId, commitHash); err != nil {
+		zap.L().Error("failed to trigger documentation generation",
+			zap.String("repoId", repoId),
+			zap.String("commitHash", commitHash),
+			zap.Error(err))
+	}
+
+	if err := h.service.TriggerSdkGeneration(ctx, repoId, commitHash); err != nil {
 		zap.L().Error("failed to trigger SDK generation",
 			zap.String("repoId", repoId),
 			zap.String("commitHash", commitHash),

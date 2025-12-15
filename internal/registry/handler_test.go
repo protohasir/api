@@ -1697,3 +1697,333 @@ func bearerToken(t *testing.T, secret string, subject string) string {
 
 	return "Bearer " + signed
 }
+
+func TestGitSshHandler_triggerPostPushActions(t *testing.T) {
+	t.Run("success - triggers documentation and SDK generation", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		commitHash := initGitRepoWithProtoFile(t, repoPath)
+
+		handler := &GitSshHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		mockService.EXPECT().
+			HasProtoFiles(gomock.Any(), repoPath).
+			Return(true, nil)
+
+		mockService.EXPECT().
+			TriggerDocumentationGeneration(gomock.Any(), repoID, commitHash).
+			Return(nil)
+
+		mockService.EXPECT().
+			TriggerSdkGeneration(gomock.Any(), repoID, commitHash).
+			Return(nil)
+
+		handler.triggerPostPushActions(repoPath)
+	})
+
+	t.Run("success - skips when no proto files", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		initGitRepoWithEmptyCommit(t, repoPath)
+
+		handler := &GitSshHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		mockService.EXPECT().
+			HasProtoFiles(gomock.Any(), repoPath).
+			Return(false, nil)
+
+		handler.triggerPostPushActions(repoPath)
+	})
+
+	t.Run("error - failed to get commit hash", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+
+		handler := &GitSshHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		handler.triggerPostPushActions(repoPath)
+	})
+
+	t.Run("error - failed to check proto files", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		initGitRepoWithProtoFile(t, repoPath)
+
+		handler := &GitSshHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		mockService.EXPECT().
+			HasProtoFiles(gomock.Any(), repoPath).
+			Return(false, errors.New("check failed"))
+
+		handler.triggerPostPushActions(repoPath)
+	})
+
+	t.Run("error - documentation generation fails but continues", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		commitHash := initGitRepoWithProtoFile(t, repoPath)
+
+		handler := &GitSshHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		mockService.EXPECT().
+			HasProtoFiles(gomock.Any(), repoPath).
+			Return(true, nil)
+
+		mockService.EXPECT().
+			TriggerDocumentationGeneration(gomock.Any(), repoID, commitHash).
+			Return(errors.New("doc generation failed"))
+
+		mockService.EXPECT().
+			TriggerSdkGeneration(gomock.Any(), repoID, commitHash).
+			Return(nil)
+
+		handler.triggerPostPushActions(repoPath)
+	})
+
+	t.Run("error - SDK generation fails but continues", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		commitHash := initGitRepoWithProtoFile(t, repoPath)
+
+		handler := &GitSshHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		mockService.EXPECT().
+			HasProtoFiles(gomock.Any(), repoPath).
+			Return(true, nil)
+
+		mockService.EXPECT().
+			TriggerDocumentationGeneration(gomock.Any(), repoID, commitHash).
+			Return(nil)
+
+		mockService.EXPECT().
+			TriggerSdkGeneration(gomock.Any(), repoID, commitHash).
+			Return(errors.New("sdk generation failed"))
+
+		handler.triggerPostPushActions(repoPath)
+	})
+}
+
+func TestGitHttpHandler_triggerPostPushActions(t *testing.T) {
+	t.Run("success - triggers documentation and SDK generation", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		commitHash := initGitRepoWithProtoFile(t, repoPath)
+
+		handler := &GitHttpHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		ctx := context.Background()
+
+		mockService.EXPECT().
+			HasProtoFiles(ctx, repoPath).
+			Return(true, nil)
+
+		mockService.EXPECT().
+			TriggerDocumentationGeneration(ctx, repoID, commitHash).
+			Return(nil)
+
+		mockService.EXPECT().
+			TriggerSdkGeneration(ctx, repoID, commitHash).
+			Return(nil)
+
+		handler.triggerPostPushActions(ctx, repoPath)
+	})
+
+	t.Run("success - skips when no proto files", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		initGitRepoWithEmptyCommit(t, repoPath)
+
+		handler := &GitHttpHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		ctx := context.Background()
+
+		mockService.EXPECT().
+			HasProtoFiles(ctx, repoPath).
+			Return(false, nil)
+
+		handler.triggerPostPushActions(ctx, repoPath)
+	})
+
+	t.Run("error - failed to get commit hash", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+
+		handler := &GitHttpHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		ctx := context.Background()
+
+		handler.triggerPostPushActions(ctx, repoPath)
+	})
+
+	t.Run("error - failed to check proto files", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		initGitRepoWithProtoFile(t, repoPath)
+
+		handler := &GitHttpHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		ctx := context.Background()
+
+		mockService.EXPECT().
+			HasProtoFiles(ctx, repoPath).
+			Return(false, errors.New("check failed"))
+
+		handler.triggerPostPushActions(ctx, repoPath)
+	})
+
+	t.Run("error - documentation generation fails but continues", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		commitHash := initGitRepoWithProtoFile(t, repoPath)
+
+		handler := &GitHttpHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		ctx := context.Background()
+
+		mockService.EXPECT().
+			HasProtoFiles(ctx, repoPath).
+			Return(true, nil)
+
+		mockService.EXPECT().
+			TriggerDocumentationGeneration(ctx, repoID, commitHash).
+			Return(errors.New("doc generation failed"))
+
+		mockService.EXPECT().
+			TriggerSdkGeneration(ctx, repoID, commitHash).
+			Return(nil)
+
+		handler.triggerPostPushActions(ctx, repoPath)
+	})
+
+	t.Run("error - SDK generation fails but continues", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockService := NewMockService(ctrl)
+
+		tempDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(tempDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		commitHash := initGitRepoWithProtoFile(t, repoPath)
+
+		handler := &GitHttpHandler{
+			service:   mockService,
+			reposPath: tempDir,
+		}
+
+		ctx := context.Background()
+
+		mockService.EXPECT().
+			HasProtoFiles(ctx, repoPath).
+			Return(true, nil)
+
+		mockService.EXPECT().
+			TriggerDocumentationGeneration(ctx, repoID, commitHash).
+			Return(nil)
+
+		mockService.EXPECT().
+			TriggerSdkGeneration(ctx, repoID, commitHash).
+			Return(errors.New("sdk generation failed"))
+
+		handler.triggerPostPushActions(ctx, repoPath)
+	})
+}

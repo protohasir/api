@@ -1735,6 +1735,172 @@ func TestService_GenerateDocumentation(t *testing.T) {
 	})
 }
 
+func TestService_TriggerDocumentationGeneration(t *testing.T) {
+	t.Run("success - generates documentation", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockRepo := NewMockRepository(ctrl)
+
+		reposDir := t.TempDir()
+		sdkDir := t.TempDir()
+		repoID := "repo-123"
+		orgID := "org-123"
+		repoPath := filepath.Join(reposDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		commitHash := initGitRepoWithProtoFile(t, repoPath)
+
+		svc := &service{
+			rootPath:   reposDir,
+			repository: mockRepo,
+			sdkPath:    sdkDir,
+			docGenerator: sdkgenerator.NewDocumentationGenerator(
+				sdkgenerator.NewDefaultCommandRunner(),
+			),
+		}
+
+		ctx := context.Background()
+
+		mockRepo.EXPECT().
+			GetRepositoryById(ctx, repoID).
+			Return(&RepositoryDTO{
+				Id:             repoID,
+				OrganizationId: orgID,
+				Path:           repoPath,
+			}, nil)
+
+		err := svc.TriggerDocumentationGeneration(ctx, repoID, commitHash)
+		require.NoError(t, err)
+
+		// Verify documentation was generated
+		docPath := filepath.Join(sdkDir, orgID, repoID, commitHash, "docs", "index.md")
+		assert.FileExists(t, docPath)
+	})
+
+	t.Run("success - skips when no proto files", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockRepo := NewMockRepository(ctrl)
+
+		reposDir := t.TempDir()
+		sdkDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(reposDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		commitHash := initGitRepoWithEmptyCommit(t, repoPath)
+
+		svc := &service{
+			rootPath:   reposDir,
+			repository: mockRepo,
+			sdkPath:    sdkDir,
+			docGenerator: sdkgenerator.NewDocumentationGenerator(
+				sdkgenerator.NewDefaultCommandRunner(),
+			),
+		}
+
+		ctx := context.Background()
+
+		err := svc.TriggerDocumentationGeneration(ctx, repoID, commitHash)
+		require.NoError(t, err)
+
+		// Verify documentation was not generated
+		docPath := filepath.Join(sdkDir, "org-123", repoID, commitHash, "docs", "index.md")
+		assert.NoFileExists(t, docPath)
+	})
+
+	t.Run("error - failed to check for proto files", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockRepo := NewMockRepository(ctrl)
+
+		reposDir := t.TempDir()
+		sdkDir := t.TempDir()
+		repoID := "nonexistent-repo"
+
+		svc := &service{
+			rootPath:   reposDir,
+			repository: mockRepo,
+			sdkPath:    sdkDir,
+			docGenerator: sdkgenerator.NewDocumentationGenerator(
+				sdkgenerator.NewDefaultCommandRunner(),
+			),
+		}
+
+		ctx := context.Background()
+
+		err := svc.TriggerDocumentationGeneration(ctx, repoID, "abc123")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to check for proto files")
+	})
+
+	t.Run("error - repository not found", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockRepo := NewMockRepository(ctrl)
+
+		reposDir := t.TempDir()
+		sdkDir := t.TempDir()
+		repoID := "repo-123"
+		repoPath := filepath.Join(reposDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		commitHash := initGitRepoWithProtoFile(t, repoPath)
+
+		svc := &service{
+			rootPath:   reposDir,
+			repository: mockRepo,
+			sdkPath:    sdkDir,
+			docGenerator: sdkgenerator.NewDocumentationGenerator(
+				sdkgenerator.NewDefaultCommandRunner(),
+			),
+		}
+
+		ctx := context.Background()
+
+		mockRepo.EXPECT().
+			GetRepositoryById(ctx, repoID).
+			Return(nil, errors.New("repository not found"))
+
+		err := svc.TriggerDocumentationGeneration(ctx, repoID, commitHash)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to fetch repository")
+	})
+
+	t.Run("error - invalid commit hash", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockRepo := NewMockRepository(ctrl)
+
+		reposDir := t.TempDir()
+		sdkDir := t.TempDir()
+		repoID := "repo-123"
+		orgID := "org-123"
+		repoPath := filepath.Join(reposDir, repoID)
+
+		require.NoError(t, os.MkdirAll(repoPath, 0o755))
+		initGitRepoWithProtoFile(t, repoPath)
+
+		svc := &service{
+			rootPath:   reposDir,
+			repository: mockRepo,
+			sdkPath:    sdkDir,
+			docGenerator: sdkgenerator.NewDocumentationGenerator(
+				sdkgenerator.NewDefaultCommandRunner(),
+			),
+		}
+
+		ctx := context.Background()
+
+		mockRepo.EXPECT().
+			GetRepositoryById(ctx, repoID).
+			Return(&RepositoryDTO{
+				Id:             repoID,
+				OrganizationId: orgID,
+				Path:           repoPath,
+			}, nil)
+
+		err := svc.TriggerDocumentationGeneration(ctx, repoID, "invalid-commit-hash")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to checkout commit")
+	})
+}
+
 func TestNewService_WithConfig(t *testing.T) {
 	t.Run("uses default SDK path when config is nil", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
