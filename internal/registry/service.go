@@ -853,12 +853,38 @@ func (s *service) GenerateSDK(ctx context.Context, repositoryId, commitHash stri
 
 	sdkDirName := generator.DirName()
 	outputPath := filepath.Join(s.sdkPath, repo.OrganizationId, repositoryId, commitHash, sdkDirName)
-	output, err := sdkgenerator.GenerateFromRepo(ctx, generator, workDir, outputPath)
-	if err != nil {
-		zap.L().Error("SDK generation failed",
-			zap.String("sdk", string(sdk)),
-			zap.Error(err))
-		return fmt.Errorf("SDK generation failed: %w", err)
+
+	var output *sdkgenerator.GeneratorOutput
+	bufGenYamlPath := filepath.Join(workDir, "buf.gen.yaml")
+	if _, err := os.Stat(bufGenYamlPath); err == nil {
+		zap.L().Info("buf.gen.yaml found, using buf generator",
+			zap.String("repositoryId", repositoryId),
+			zap.String("commitHash", commitHash),
+			zap.String("sdk", string(sdk)))
+
+		bufGenerator := sdkgenerator.NewBufGenerator(
+			sdkgenerator.NewDefaultCommandRunner(),
+		)
+		input := sdkgenerator.GeneratorInput{
+			RepoPath:   workDir,
+			OutputPath: outputPath,
+			ProtoFiles: []string{},
+		}
+		output, err = bufGenerator.Generate(ctx, input)
+		if err != nil {
+			zap.L().Error("SDK generation with buf generator failed",
+				zap.String("sdk", string(sdk)),
+				zap.Error(err))
+			return fmt.Errorf("SDK generation with buf generator failed: %w", err)
+		}
+	} else {
+		output, err = sdkgenerator.GenerateFromRepo(ctx, generator, workDir, outputPath)
+		if err != nil {
+			zap.L().Error("SDK generation failed",
+				zap.String("sdk", string(sdk)),
+				zap.Error(err))
+			return fmt.Errorf("SDK generation failed: %w", err)
+		}
 	}
 
 	zap.L().Info("SDK generated successfully",

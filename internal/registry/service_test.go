@@ -77,6 +77,43 @@ func initGitRepoWithProtoFile(t *testing.T, repoPath string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func initGitRepoWithBufGenYaml(t *testing.T, repoPath string) string {
+	t.Helper()
+
+	bufGenYaml := filepath.Join(repoPath, "buf.gen.yaml")
+	bufGenYamlContent := `version: v1
+plugins:
+  - plugin: buf.build/protocolbuffers/go
+    out: gen/go
+    opt: paths=source_relative
+`
+	require.NoError(t, os.WriteFile(bufGenYaml, []byte(bufGenYamlContent), 0o644))
+
+	protoFile := filepath.Join(repoPath, "test.proto")
+	require.NoError(t, os.WriteFile(protoFile, []byte("syntax = \"proto3\";\npackage test;\n"), 0o644))
+
+	cmds := [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "add", "."},
+		{"git", "commit", "-m", "add buf.gen.yaml and proto file"},
+	}
+
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repoPath
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "command %v failed: %s", args, string(out))
+	}
+
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	return strings.TrimSpace(string(out))
+}
+
 func TestNewService(t *testing.T) {
 	t.Run("default root path", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
@@ -834,8 +871,8 @@ func TestService_GetCommits(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotNil(t, resp)
 		assert.Len(t, resp.GetCommits(), 2)
-		assert.Equal(t, int32(3), resp.GetTotalPage()) // 12 commits / 5 per page = 3 pages
-		assert.Equal(t, int32(3), resp.GetNextPage())  // page 2 < total pages, so next is 3
+		assert.Equal(t, int32(3), resp.GetTotalPage())
+		assert.Equal(t, int32(3), resp.GetNextPage())
 	})
 }
 
@@ -1403,14 +1440,13 @@ func TestService_GenerateSDK(t *testing.T) {
 		repoPath := filepath.Join(tmpDir, repoID)
 		require.NoError(t, os.MkdirAll(repoPath, 0o750))
 
-		// Initialize git repo with empty commit
 		commitHash := initGitRepoWithEmptyCommit(t, repoPath)
 
 		svc := &service{
 			rootPath:    tmpDir,
 			repository:  mockRepo,
 			sdkPath:     sdkDir,
-			sdkRegistry: sdkgenerator.NewRegistry(nil),
+			sdkRegistry: sdkgenerator.NewRegistry(sdkgenerator.NewDefaultCommandRunner()),
 		}
 
 		ctx := context.Background()
@@ -1464,6 +1500,148 @@ func TestService_GenerateSDK(t *testing.T) {
 		err := svc.GenerateSDK(ctx, repoID, commitHash, SDK("INVALID_SDK"))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported SDK type")
+	})
+
+	t.Run("success - uses buf generator when buf.gen.yaml exists", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockRepo := NewMockRepository(ctrl)
+		tmpDir := t.TempDir()
+		sdkDir := t.TempDir()
+
+		repoID := uuid.NewString()
+		repoPath := filepath.Join(tmpDir, repoID)
+		require.NoError(t, os.MkdirAll(repoPath, 0o750))
+
+		commitHash := initGitRepoWithBufGenYaml(t, repoPath)
+
+		cfg := &config.Config{
+			SdkGeneration: config.SdkGenerationConfig{
+				OutputPath: sdkDir,
+			},
+		}
+
+		runner := sdkgenerator.NewDefaultCommandRunner()
+		svc := &service{
+			rootPath:     tmpDir,
+			repository:   mockRepo,
+			sdkPath:      sdkDir,
+			cfg:          cfg,
+			sdkRegistry:  sdkgenerator.NewRegistry(runner),
+			docGenerator: sdkgenerator.NewDocumentationGenerator(runner),
+		}
+
+		ctx := context.Background()
+		orgID := "org-123"
+
+		mockRepo.EXPECT().
+			GetRepositoryById(ctx, repoID).
+			Return(&RepositoryDTO{
+				Id:             repoID,
+				OrganizationId: orgID,
+				Path:           repoPath,
+			}, nil)
+
+		err := svc.GenerateSDK(ctx, repoID, commitHash, SdkGoProtobuf)
+		if err != nil {
+			assert.Contains(t, err.Error(), "buf")
+		}
+	})
+
+	t.Run("success - uses protoc generator when buf.gen.yaml does not exist", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockRepo := NewMockRepository(ctrl)
+		tmpDir := t.TempDir()
+		sdkDir := t.TempDir()
+
+		repoID := uuid.NewString()
+		repoPath := filepath.Join(tmpDir, repoID)
+		require.NoError(t, os.MkdirAll(repoPath, 0o750))
+
+		commitHash := initGitRepoWithProtoFile(t, repoPath)
+
+		cfg := &config.Config{
+			SdkGeneration: config.SdkGenerationConfig{
+				OutputPath: sdkDir,
+			},
+		}
+
+		runner := sdkgenerator.NewDefaultCommandRunner()
+		svc := &service{
+			rootPath:     tmpDir,
+			repository:   mockRepo,
+			sdkPath:      sdkDir,
+			cfg:          cfg,
+			sdkRegistry:  sdkgenerator.NewRegistry(runner),
+			docGenerator: sdkgenerator.NewDocumentationGenerator(runner),
+		}
+
+		ctx := context.Background()
+		orgID := "org-123"
+
+		mockRepo.EXPECT().
+			GetRepositoryById(ctx, repoID).
+			Return(&RepositoryDTO{
+				Id:             repoID,
+				OrganizationId: orgID,
+				Path:           repoPath,
+			}, nil)
+
+		err := svc.GenerateSDK(ctx, repoID, commitHash, SdkGoProtobuf)
+		if err != nil {
+			assert.NotContains(t, err.Error(), "buf")
+			assert.NotContains(t, err.Error(), "buf.gen.yaml")
+		} else {
+			expectedPath := filepath.Join(sdkDir, orgID, repoID, commitHash, "go-protobuf")
+			assert.DirExists(t, expectedPath)
+
+			bufPath := filepath.Join(sdkDir, orgID, repoID, commitHash, "buf")
+			assert.NoDirExists(t, bufPath)
+		}
+	})
+
+	t.Run("error - buf generator fails", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockRepo := NewMockRepository(ctrl)
+		tmpDir := t.TempDir()
+		sdkDir := t.TempDir()
+
+		repoID := uuid.NewString()
+		repoPath := filepath.Join(tmpDir, repoID)
+		require.NoError(t, os.MkdirAll(repoPath, 0o750))
+
+		commitHash := initGitRepoWithBufGenYaml(t, repoPath)
+
+		cfg := &config.Config{
+			SdkGeneration: config.SdkGenerationConfig{
+				OutputPath: sdkDir,
+			},
+		}
+
+		runner := sdkgenerator.NewDefaultCommandRunner()
+		svc := &service{
+			rootPath:     tmpDir,
+			repository:   mockRepo,
+			sdkPath:      sdkDir,
+			cfg:          cfg,
+			sdkRegistry:  sdkgenerator.NewRegistry(runner),
+			docGenerator: sdkgenerator.NewDocumentationGenerator(runner),
+		}
+
+		ctx := context.Background()
+		orgID := "org-123"
+
+		mockRepo.EXPECT().
+			GetRepositoryById(ctx, repoID).
+			Return(&RepositoryDTO{
+				Id:             repoID,
+				OrganizationId: orgID,
+				Path:           repoPath,
+			}, nil)
+
+		err := svc.GenerateSDK(ctx, repoID, commitHash, SdkGoProtobuf)
+		require.Error(t, err)
+
+		assert.Contains(t, err.Error(), "buf")
 	})
 }
 
@@ -1601,7 +1779,7 @@ func TestNewService_WithConfig(t *testing.T) {
 		require.NotNil(t, concrete.sdkRegistry)
 
 		generators := concrete.sdkRegistry.List()
-		assert.Len(t, generators, 6)
+		assert.Len(t, generators, 7)
 
 		_, err := concrete.sdkRegistry.Get(sdkgenerator.SdkGoProtobuf)
 		assert.NoError(t, err)

@@ -29,6 +29,7 @@ func (b *RegistryBuilder) WithGenerator(g Generator) *RegistryBuilder {
 
 func (b *RegistryBuilder) WithDefaultGenerators() *RegistryBuilder {
 	b.generators = append(b.generators,
+		NewBufGenerator(b.runner),
 		NewGoProtobufGenerator(b.runner),
 		NewGoConnectRpcGenerator(b.runner),
 		NewGoGrpcGenerator(b.runner),
@@ -81,4 +82,26 @@ func (r *Registry) List() []SDK {
 	}
 
 	return sdks
+}
+
+func (r *Registry) FindApplicableGenerator(repoPath string) Generator {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if bufGen, ok := r.generators[SdkBuf]; ok {
+		if bufGen.IsApplicable(repoPath) {
+			return bufGen
+		}
+	}
+
+	for _, generator := range r.generators {
+		if generator.SDK() == SdkBuf {
+			continue // Already checked
+		}
+		if generator.IsApplicable(repoPath) {
+			return generator
+		}
+	}
+
+	return nil
 }

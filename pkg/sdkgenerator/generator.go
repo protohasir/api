@@ -18,6 +18,7 @@ const (
 	SdkJsBufbuildEs SDK = "JS_BUFBUILD_ES"
 	SdkJsProtobuf   SDK = "JS_PROTOBUF"
 	SdkJsConnectrpc SDK = "JS_CONNECTRPC"
+	SdkBuf          SDK = "BUF"
 )
 
 var sdkDirNames = map[SDK]string{
@@ -27,6 +28,7 @@ var sdkDirNames = map[SDK]string{
 	SdkJsBufbuildEs: "js-bufbuild-es",
 	SdkJsProtobuf:   "js-protobuf",
 	SdkJsConnectrpc: "js-connectrpc",
+	SdkBuf:          "buf",
 }
 
 func (s SDK) DirName() string {
@@ -61,6 +63,7 @@ type Generator interface {
 	SDK() SDK
 	DirName() string
 	Validate(input GeneratorInput) error
+	IsApplicable(repoPath string) bool
 }
 
 type CommandRunner interface {
@@ -100,6 +103,11 @@ func (g *baseGenerator) Validate(input GeneratorInput) error {
 	}
 
 	return nil
+}
+
+func (g *baseGenerator) IsApplicable(repoPath string) bool {
+	protoFiles, err := FindProtoFiles(repoPath)
+	return err == nil && len(protoFiles) > 0
 }
 
 func validateProtoFile(file string) error {

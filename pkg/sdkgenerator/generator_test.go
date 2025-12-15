@@ -16,6 +16,7 @@ func TestSDK_DirName(t *testing.T) {
 		sdk      SDK
 		expected string
 	}{
+		{SdkBuf, "buf"},
 		{SdkGoProtobuf, "go-protobuf"},
 		{SdkGoConnectRpc, "go-connectrpc"},
 		{SdkGoGrpc, "go-grpc"},
@@ -618,4 +619,39 @@ func TestDocumentationGenerator_Generate_ProtocError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, output)
 	assert.Contains(t, err.Error(), "protoc failed")
+}
+
+func TestBaseGenerator_IsApplicable(t *testing.T) {
+	g := &baseGenerator{sdk: SdkGoProtobuf}
+
+	t.Run("applicable when proto files exist", func(t *testing.T) {
+		tempDir := t.TempDir()
+		protoFile := filepath.Join(tempDir, "test.proto")
+		err := os.WriteFile(protoFile, []byte("syntax = \"proto3\";\n"), 0o644)
+		require.NoError(t, err)
+
+		assert.True(t, g.IsApplicable(tempDir))
+	})
+
+	t.Run("not applicable when no proto files", func(t *testing.T) {
+		emptyDir := t.TempDir()
+		assert.False(t, g.IsApplicable(emptyDir))
+	})
+
+	t.Run("not applicable for non-existent directory", func(t *testing.T) {
+		assert.False(t, g.IsApplicable("/nonexistent/path"))
+	})
+
+	t.Run("applicable with nested proto files", func(t *testing.T) {
+		tempDir := t.TempDir()
+		protoDir := filepath.Join(tempDir, "proto", "v1")
+		err := os.MkdirAll(protoDir, 0o750)
+		require.NoError(t, err)
+
+		protoFile := filepath.Join(protoDir, "service.proto")
+		err = os.WriteFile(protoFile, []byte("syntax = \"proto3\";\n"), 0o644)
+		require.NoError(t, err)
+
+		assert.True(t, g.IsApplicable(tempDir))
+	})
 }

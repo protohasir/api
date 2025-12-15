@@ -2,6 +2,8 @@ package sdkgenerator
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +15,7 @@ func TestNewRegistry(t *testing.T) {
 	assert.NotNil(t, r)
 
 	expectedSdks := []SDK{
+		SdkBuf,
 		SdkGoProtobuf,
 		SdkGoConnectRpc,
 		SdkGoGrpc,
@@ -51,13 +54,14 @@ func TestRegistry_List(t *testing.T) {
 	r := NewRegistry(NewMockCommandRunner())
 
 	sdks := r.List()
-	assert.Len(t, sdks, 6)
+	assert.Len(t, sdks, 7)
 
 	sdkMap := make(map[SDK]bool)
 	for _, sdk := range sdks {
 		sdkMap[sdk] = true
 	}
 
+	assert.True(t, sdkMap[SdkBuf])
 	assert.True(t, sdkMap[SdkGoProtobuf])
 	assert.True(t, sdkMap[SdkGoConnectRpc])
 	assert.True(t, sdkMap[SdkGoGrpc])
@@ -101,6 +105,10 @@ func (m *mockGenerator) Validate(_ GeneratorInput) error {
 	return nil
 }
 
+func (m *mockGenerator) IsApplicable(_ string) bool {
+	return true
+}
+
 func TestRegistryBuilder(t *testing.T) {
 	runner := NewMockCommandRunner()
 
@@ -128,7 +136,7 @@ func TestRegistryBuilder(t *testing.T) {
 			Build()
 
 		sdks := r.List()
-		assert.Len(t, sdks, 6)
+		assert.Len(t, sdks, 7)
 	})
 
 	t.Run("build registry with mix of default and custom", func(t *testing.T) {
@@ -140,10 +148,59 @@ func TestRegistryBuilder(t *testing.T) {
 			Build()
 
 		sdks := r.List()
-		assert.Len(t, sdks, 7)
+		assert.Len(t, sdks, 8) // 7 defaults + 1 custom
 
 		g, err := r.Get(SDK("CUSTOM"))
 		require.NoError(t, err)
 		assert.Equal(t, "custom", g.DirName())
+	})
+}
+
+func TestRegistry_FindApplicableGenerator(t *testing.T) {
+	runner := NewMockCommandRunner()
+	r := NewRegistry(runner)
+
+	t.Run("finds buf generator when buf.gen.yaml exists", func(t *testing.T) {
+		tempDir := t.TempDir()
+		bufGenYamlPath := filepath.Join(tempDir, "buf.gen.yaml")
+		err := os.WriteFile(bufGenYamlPath, []byte("version: v1\n"), 0o644)
+		require.NoError(t, err)
+
+		generator := r.FindApplicableGenerator(tempDir)
+		require.NotNil(t, generator)
+		assert.Equal(t, SdkBuf, generator.SDK())
+	})
+
+	t.Run("finds protoc generator when buf.gen.yaml does not exist but proto files exist", func(t *testing.T) {
+		tempDir := t.TempDir()
+		protoFile := filepath.Join(tempDir, "test.proto")
+		err := os.WriteFile(protoFile, []byte("syntax = \"proto3\";\n"), 0o644)
+		require.NoError(t, err)
+
+		generator := r.FindApplicableGenerator(tempDir)
+		require.NotNil(t, generator)
+		assert.NotEqual(t, SdkBuf, generator.SDK())
+	})
+
+	t.Run("returns nil when no generators are applicable", func(t *testing.T) {
+		emptyDir := t.TempDir()
+
+		generator := r.FindApplicableGenerator(emptyDir)
+		assert.Nil(t, generator)
+	})
+
+	t.Run("buf generator takes priority over protoc generators", func(t *testing.T) {
+		tempDir := t.TempDir()
+		bufGenYamlPath := filepath.Join(tempDir, "buf.gen.yaml")
+		err := os.WriteFile(bufGenYamlPath, []byte("version: v1\n"), 0o644)
+		require.NoError(t, err)
+
+		protoFile := filepath.Join(tempDir, "test.proto")
+		err = os.WriteFile(protoFile, []byte("syntax = \"proto3\";\n"), 0o644)
+		require.NoError(t, err)
+
+		generator := r.FindApplicableGenerator(tempDir)
+		require.NotNil(t, generator)
+		assert.Equal(t, SdkBuf, generator.SDK())
 	})
 }
